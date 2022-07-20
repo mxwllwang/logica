@@ -1,0 +1,4 @@
+# !/bin/bash -eu
+# Maxwell
+
+python3 "$(dirname $0)/logica.py" "$1" parse | python3 "$(dirname $0)/predicate_map.py"
