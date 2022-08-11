@@ -1,62 +1,66 @@
 #!/usr/bin/python
 # Maxwell
 
-"""Command-line tool to convert syntax tree to predicate -> arg map.
+"""Command-line tool to validate predicates from a syntax tree.
 
 Args:
   JSON string from standard input
 
 Output:
-  Dict from predicate -> list[arguments]
+  Prints well formatted outputs for:
+    Dict that maps from predicate name to list[calls]
+    Validates each predicate in the Dict.
   
-Run with: ./predicate logica_query.l
+  Typical Usage:
+  
+  ./predicate logica_query.l
+  (with predicate executable)
   
 """
 
 import json
 import sys
+from typecheck import predicate_checker
 
-parsed_output = "" # json string
+# Read JSON String from standard input.
+parsed_output = ""
 for line in sys.stdin:
   parsed_output += line
 
-# List of dict describing parsed syntax tree.
-syntax = json.loads(parsed_output) # Save json to dict
-
-# Finds all predicate -> argument mappings contained in a dictionary
-# and adds them to the specified predicate_map.
-def find_predicate(root, p_list):
-  if isinstance(root, list):
-    for sub_dict in root:
-      find_predicate(sub_dict, p_list)
-    return
-  elif not isinstance(root, dict):
-    return
-  
-  # Find predicate and related arguments within JSON.
-  find_p = root.get("predicate_name")
-  find_r = root.get("record")
-  if find_p is not None:
-    if find_r is not None:
-      p_list.append((find_p, find_r.get("field_value")))
-    else:
-      p_list.append((find_p, []))
-    
-  # Check subtrees for dictionaries.
-  for key, sub_dict in root.items():
-    find_predicate(sub_dict, p_list)
-  
-  return
-
-predicate_list = []
-find_predicate(syntax,  predicate_list)
+predicate_map = predicate_checker.map_predicates(parsed_output)
 
 # Format output.
-print("\n" + str(len(predicate_list)) + " predicate(s) found\n")
+print("\n" + str(len(predicate_map)) + " predicate(s) found\n")
 
-for predicate, args in predicate_list:
-  num_args = len(args)
-  print(str(predicate) + " : "
-        + str(num_args) + " argument(s)")
-  print("\t\t" + str(args) + "\n")
+# Format results of predicate_map
+for predicate in predicate_map.keys():
+  print("Predicate name:", predicate)
+  print("Number of calls:", len(predicate_map.get(predicate)))
+  print()
+  i = 1
+  for tup in predicate_map.get(predicate):
+    print(" {}) Full_text: \"{}\"".format(i, tup[0]))
+    print("  Fields:")
+    for field in tup[1]:
+      print("    field: {}, type: {}, value: {}".format(field.get('field'), field.get('type'), field.get('value')))
+    i += 1
+    print()
+    
+# Format results of validate_predicate
+operators = ['+','-','/','>','<','<=','>=','==','->','&&','||']
+p_reference = {operator:"Placeholder" for operator in operators}
 
+print("\nVerify_Predicates\n")
+
+errors = predicate_checker.verify_predicates(parsed_output, p_reference=p_reference)
+print("\nError Log\n")
+for error in errors[0]:
+  print("Error in {}: {}".format(error[0], error[3]))
+  print("  Predicate reference call: {}".format(error[1]))
+  print("  Predicate error call: {}".format(error[2]))
+  print()
+  
+# print()
+# print(errors[1])
+# print()
+# print(errors[2])
