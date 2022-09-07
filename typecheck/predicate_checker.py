@@ -10,9 +10,15 @@ TODO
 import json
 import logging
 import sys
+import sqlite3
+
+# if '.' not in __package__:
+from ..common import logica_lib
+# else:
+#  from ..common import logica_lib
 
 logging.basicConfig(
-  level=logging.INFO,
+  level=logging.WARNING,
   format="%(asctime)s [%(levelname)s] %(message)s",
   datefmt="%m/%d/%Y %I:%M:%S %p",
   handlers=[
@@ -47,6 +53,12 @@ def verify_predicates(syntax_tree, p_reference={}, p_unchecked={}):
     p_reference may be updated? TODO
   
   """
+  # Add predefined operators to p_reference
+  num_operators = ['+', '-', '/', '*', '>','<','<=','>=','==']
+  bool_operators = ['&&', '||']
+  p_reference.update({operator:("Predefined Num Operator", [{'field': 'left', 'type': 'number'}, {'field': 'right', 'type': 'number'}]) for operator in num_operators})
+  p_reference.update({operator:("Predefined Bool Operator", [{'field': 'left', 'type': 'boolean'}, {'field': 'right', 'type': 'boolean'}]) for operator in bool_operators})
+
   errors = []
   syntax = json.loads(syntax_tree) # Save json to dict.
 
@@ -60,11 +72,37 @@ def verify_predicates(syntax_tree, p_reference={}, p_unchecked={}):
     _find_predicate(body, p_list)
     
     is_header = True # is_header holds only for the first predicate.
+    
+     # Find true type and add type to fields
     for (p_name, p_fields) in p_list:
-      for field in p_fields:
-        field.update({'type' : _get_type(field)})
-
+      # for field in p_fields:
+      #   field.update({'type' : _get_type(field)})
+      
       call = (full_text, p_fields)
+      
+      # Imperative predicates are ignored.
+      if p_name[0] == '@':
+        logging.info("Ignoring imperative predicate {}".format(p_name))
+        continue
+      
+      # Database Tables have their schema made into a header predicate first,
+      # if reference does not yet exist. Then we can compare to the schema.
+      if p_name[0] == '`' and p_name[-1] == '`' and p_name not in p_reference.keys():
+        logging.info("Creating reference for database table {}".format(p_name))
+        schema = _fetch_schema(p_name)
+        # Create a independent header for tables from BigQuery
+        reference_call = ("Fetch " + p_name, _fetch_schema(p_name))
+        p_reference.update({p_name : reference_call})
+        logging.debug(p_reference)
+      
+      # Check for duplicate field names.
+      field_names = set()
+      for p in p_fields:
+        if p.get('field') in field_names:
+          errors.append((p_name, None, call, ["Duplicate field {}".format(p.get('field'))]))
+          break
+        field_names.add(p.get('field'))
+
       if p_name in p_reference.keys():
         # If a reference already exists for this predicate.
         if is_header:
@@ -75,7 +113,7 @@ def verify_predicates(syntax_tree, p_reference={}, p_unchecked={}):
         if error is not None:
           errors.append(error)
       else:
-        # If no reference exists for this predicate
+        # If no reference exists for this predicate.
         if is_header:
           # Create a reference for this predicate.
           p_reference.update({p_name : call})
@@ -113,7 +151,8 @@ def check_predicate(name, reference, call, is_header=False):
       Z where Z(a:, b:) :- X(a:), Y(b:);
 
   Returns:
-    A tuple in the format (name, reference, error, error_text)
+    A tuple in the format (name, reference, call, errors)
+      Where errors is a list of error messages.
     None if no error found.
     
   """
@@ -121,57 +160,72 @@ def check_predicate(name, reference, call, is_header=False):
   logging.info("Call to check_predicate on %s \nReference: %r\nCall: %r,\nis_header: %r",
               name, reference, call, is_header)
   
-  error_text = None
+  errors = []
   # List of {field: value:} dicts in the reference and in the call.
   r_fields = reference[1]
   c_fields = call[1]
   
-  # TODO: handle operator predicates, until then perators will return an error.
-  # Allegedly there are many more operators than this.
-  operators = ['+','-','/','>','<','<=','>=','==','->','&&','||']
-  if name in operators:
-    logging.warning("Unsupported Predicate: Operator")
-    error_text = "Unsupported Predicate: Operator"
-    return (name, reference, call, error_text)
+
+  # Handle Operators.
+  operators = ['||', '&&', '->', '==', '<=', '>=', '<', '>', '!=',
+      ' in ', '++?', '++', '+', '-', '*', '/', '%', '^', '!']
+  unary_operators = ['-', '!'] # What to do with this?
+  unsupported_operators = ['->', ' in ', '++?', '++', '%', '^', '!']
   
-  # MAIN TODO: Write code to compare fields, etc
-  # TODO: Improve error message reporting
-  if is_header:
-    # Header call fields must match reference exactly in order, number, and type.
-    if len(r_fields) != len(c_fields):
-      error_text = ("Incorrect number of predicate fields '{}' and '{}'."
-                    .format(len(r_fields), len(c_fields)))
+  if name in operators: # Predicate is an operator
+    # TODO: Support operators
+    if name in unsupported_operators:
+      logging.warning("Unsupported Operator: {}".format(name))
+      errors.append("Unsupported Operator: {}".format(name))
     else:
       for (r, c) in zip(r_fields, c_fields):
-        logging.info("Hmmmm, %r vs %r", r, c)
-        if (r.get('field') != c.get('field')):
-          error_text = ("Fields '{}' and '{}' must be listed in the same order."
-                        .format(r.get('field'), c.get('field')))
-          break
-        elif (r.get('type') != c.get('type')):
-          error_text = ("Fields '{}' and '{}' have inconsistent types '{}' and '{}'."
-                        .format(r.get('field'), c.get('field'), r.get('type'), c.get('type')))
-          break
-  else:
+        if r.get('field') != c.get('field'):
+            # TODO: Confirm that this is not possible
+            errors.append("PROGRAM ERROR: Fields '{}' and '{}' are not the same for operator '{}'."
+                        .format(r.get('field'), c.get('field'), name))
+            logging.error("Unexpected operator field name")
+            break
+        # elif r.get('type') != c.get('type'):
+        #     errors.append("Operator '{}' invalid for type '{}'."
+        #                   .format(name, c.get('type')))
+        #     break
+  else: # Predicate is defined by the user
+    # TODO: Improve error message reporting
+    if is_header:
+      # Header call fields must match reference exactly in order, number, and type.
+      if len(r_fields) != len(c_fields):
+        errors.append("Inconsistent number of predicate fields '{}' and '{}'."
+                      .format(len(r_fields), len(c_fields)))
+      
+      for (r, c) in zip(r_fields, c_fields):
+        if r.get('field') != c.get('field'):
+          errors.append("Field names '{}' and '{}' do not match. Note that fields must be listed in a consistent order."
+            .format(r.get('field'), c.get('field')))
+        # elif r.get('type') != c.get('type'):
+        #   errors.append("Fields '{}' and '{}' have inconsistent types '{}' and '{}'."
+        #     .format(r.get('field'), c.get('field'), r.get('type'), c.get('type')))
+        #   break
+
     # Body call field names must all exist within the reference.
     if len(r_fields) < len(c_fields):
-      error_text = ("Predicate {} has extraneous fields.".format(name))
-    else:
-      available_names = [r.get('field') for r in r_fields]
-      for c in c_fields:
-        field_name = c.get('field')
-        if field_name not in available_names:
-          error_text = ("Unrecognized field name '{}'.".format(field_name))
-          break
-        # TODO: Else if for if the types don't match. Are the types vawiables? idk.
+      errors.append("Predicate {} has extraneous fields.".format(name))
+
+    available_names = [r.get('field') for r in r_fields]
+    for c in c_fields:
+      field_name = c.get('field')
+      if field_name not in available_names:
+        errors.append("Unrecognized field name '{}'.".format(field_name))
+      # TODO: Else if for if the types don't match. Are the types vawiables? idk.
     
-  if error_text is None:
+  if len(errors) == 0:
     logging.info("No error found")
     return None
   else:
     logging.info("Error found")
-    return (name, reference, call, error_text)
+    return (name, reference, call, errors)
 
+#TODO: Enable BigQuery API from map_predicates.
+# Then, enable bigquery API from verify_predicates.
 def map_predicates(syntax_tree):
   """ Convert logica syntax tree into predicate -> calls map.
   
@@ -209,15 +263,43 @@ def map_predicates(syntax_tree):
     p_list = []
     _find_predicate(head, p_list)
     _find_predicate(body, p_list)
+    
     for (p_name, p_fields) in p_list:
+      # Find true type and add type to fields
+      # for field in p_fields:
+      #   field.update({'type' : _get_type(field)})
       
-      # TODO: USING GET_TYPE in map first as a test.
-      for field in p_fields:
-        field.update({'type' : _get_type(field)})
+      # Handle database tables from BigQuery
+      if p_name[0] == '`' and p_name[-1] == '`':
+        schema = _fetch_schema(p_name)
+        # Create a independent header for tables from BigQuery
+        _add_predicate(predicate_map, "Fetch " + p_name, p_name, schema)
+        
       _add_predicate(predicate_map, full_text, p_name, p_fields)
   
   return predicate_map
 
+def _fetch_schema(p_name):
+  """ Fetch table schema from BigQuery table.
+  Args:
+    p_name: The bq path `project(optional).dataset.table_name` as provided to Logica
+  
+  Returns:
+    A {field: field_name, type: data_type} dict representing specified table schema.
+  """
+  logging.info("Identified BigQuery table %s", p_name)
+  p_components = p_name[1:-1].split('.')
+  dataset = p_components[0] # dataset.tablename (within default project)
+  if len(p_components) == 3: # If project is specified, i.e. project.dataset.tablename
+    dataset = '`' + p_components[0] + '`.' + p_components[1]
+  table_name = p_components[-1]
+  # Query Information Schema Columns
+  sql = ("SELECT COLUMN_NAME AS field, DATA_TYPE AS type \
+  FROM {}.INFORMATION_SCHEMA.COLUMNS \
+  WHERE TABLE_NAME = \"{}\"".format(dataset, table_name))
+  logging.debug(sql)
+  return json.loads(logica_lib.RunQuery(sql, output_format='json')) # Engine is bq by default
+  
 
 # _extract_predicate_to_list?
 def _find_predicate(root, p_list):
@@ -270,7 +352,7 @@ def _add_predicate(predicate_map, full_text, name, fields):
   return
 
 # TODO: Main
-def _get_type(field):
+def _get_type(field, variables):
   """ Parse syntax tree of a dict(field:, value:) for true type.
   
   Args:
