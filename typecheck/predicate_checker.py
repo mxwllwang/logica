@@ -1,10 +1,7 @@
 #!/usr/bin/python
 # Maxwell
 
-""" Generate predicate map from parsed output and validate usage
-
-TODO
-
+""" Find predicates and generate list of errors from syntax tree.
 """
 
 import json
@@ -12,10 +9,10 @@ import logging
 import sys
 import sqlite3
 
-# if '.' not in __package__:
-from ..common import logica_lib
-# else:
-#  from ..common import logica_lib
+if '.' not in __package__:
+  from common import logica_lib
+else:
+  from ..common import logica_lib
 
 logging.basicConfig(
   level=logging.WARNING,
